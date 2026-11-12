@@ -1,8 +1,8 @@
 {
   "name": "codex-task-router",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "private": true,
-  "description": "Plan Codex model, reasoning effort, skills, work units, browser paths, and bounded worker dispatch with optional TypeSafe Jev.",
+  "description": "Plan Codex or Claude Code model, reasoning effort, skills, work units, browser paths, and bounded worker dispatch with optional TypeSafe Jev.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -12,8 +12,8 @@
     ".": "./scripts/route.mjs"
   },
   "scripts": {
-    "test": "node --test scripts/route.test.mjs scripts/cli.test.mjs",
-    "check": "node --check scripts/route.mjs && node --check scripts/catalog.mjs"
+    "test": "node --test scripts/route.test.mjs scripts/cli.test.mjs scripts/receipt.test.mjs",
+    "check": "node --check scripts/route.mjs && node --check scripts/catalog.mjs && node --check scripts/receipt.mjs"
   },
   "files": [
     "SKILL.md",
@@ -21,6 +21,7 @@
     "references/",
     "scripts/route.mjs",
     "scripts/catalog.mjs",
+    "scripts/receipt.mjs",
     "examples/",
     "README.md",
     "LICENSE",
@@ -28,6 +29,6 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/sir-ad/codex-task-router.git"
+    "url": "https://github.com/sir-ad/codex-jev-task-router.git"
   }
 }

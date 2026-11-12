@@ -1,8 +1,8 @@
-# Codex Task Router
+# Task Router for Codex and Claude Code
 
-[![CI](https://github.com/sir-ad/codex-task-router/actions/workflows/ci.yml/badge.svg)](https://github.com/sir-ad/codex-task-router/actions/workflows/ci.yml)
+[![CI](https://github.com/sir-ad/codex-jev-task-router/actions/workflows/ci.yml/badge.svg)](https://github.com/sir-ad/codex-jev-task-router/actions/workflows/ci.yml)
 
-A Codex skill and dependency-free Node.js helper for planning the model, thinking effort, skills, and bounded worker use for a task. Clear tasks route locally. Ambiguous tasks can ask [TypeSafe Jev](https://docs.typesafe.ai/api) for typed judgments, then apply explicit policy checks in code.
+A skill for Codex and Claude Code, plus a dependency-free Node.js helper, for planning the model, thinking effort, skills, and bounded worker use for a task. Clear tasks route locally. Ambiguous tasks can ask [TypeSafe Jev](https://docs.typesafe.ai/api) for typed judgments, then apply explicit policy checks in code.
 
 The helper returns a **plan**. The agent checks the active tool catalog, dispatches any worker, and verifies the task result. Running the helper does not change the model of the current conversation.
 
@@ -12,12 +12,25 @@ Requires Git and Node.js 22 or newer. A supported [Node.js LTS release](https://
 
 ```sh
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-git clone --branch v2.1.1 --depth 1 \
-  https://github.com/sir-ad/codex-task-router.git \
+git clone --branch v2.2.0 --depth 1 \
+  https://github.com/sir-ad/codex-jev-task-router.git \
   "${CODEX_HOME:-$HOME/.codex}/skills/codex-task-router"
 ```
 
 The destination must not already exist. Back up an older installation before replacing it, then restart Codex so it discovers the skill. Invoke `$codex-task-router` for a task or let Codex select it when relevant. This package does not require another custom skill. Optional browser skills can be selected only when installed and appropriate.
+
+## Install for Claude Code
+
+Same repository, same `SKILL.md`. Clone it where Claude Code discovers skills; the directory name stays `codex-task-router` because that is the skill name.
+
+```sh
+mkdir -p ~/.claude/skills
+git clone --branch v2.2.0 --depth 1 \
+  https://github.com/sir-ad/codex-jev-task-router.git \
+  ~/.claude/skills/codex-task-router
+```
+
+For one repository (including Claude Code cloud sessions, which read committed project skills), put the clone under `.claude/skills/codex-task-router` and commit it. Invoke it with `/codex-task-router` or let Claude select it. Pass `"host": "claude"` to the helper so `dispatch` is an `Agent` call with a `haiku`, `sonnet` or `opus` alias. Claude Code only: Agent `effort` is passed only when you explicitly ask for one.
 
 ## Try it
 
@@ -34,15 +47,19 @@ The examples use no TypeSafe key and make no network call. `catalog.mjs` reads a
 
 For a genuinely ambiguous public task, set `uncertain: true`, `privacy: "public"`, and `sanitized: true` only after reviewing the entire outbound summary and skill descriptions. Supply `TYPESAFE_API_KEY` at runtime. On macOS, the helper can use an existing generic Keychain password with account `typesafe-ai` and service `typesafe_api_key`. TypeSafe is optional: no key is needed for clear, tiny, private, or unsanitized routes. Provider API use may incur charges.
 
-The input and output fields are documented in [the routing contract](references/routing-contract.md). A JavaScript caller can import `route` from `scripts/route.mjs`. `status: planned` still means no worker has run; inspect `dispatch`, recheck tool support, then record and verify actual execution.
+The input and output fields are documented in [the routing contract](references/routing-contract.md). `uncertain` is required: `false` keeps a clear task on the local path (it can reach Luna and a cheaper worker), `true` is for genuine ambiguity. A model entry may carry an optional `tier` (`focused`, `standard`, `frontier`) so a newly released model routes correctly without a code change; an unlabelled unknown model is used only when explicitly requested, and flagged for review.
+
+A JavaScript caller can import `route` from `scripts/route.mjs`. `status: planned` still means no worker has run; inspect `dispatch`, recheck tool support, then record and verify actual execution.
 
 ## Routing policy
 
 | Task shape | Starting worker model | Starting effort |
 | --- | --- | --- |
 | Clear, repeatable work | GPT-6 Luna | High |
-| Implementation and synthesis | GPT-6 Sol | Medium |
+| Implementation and synthesis | GPT-6.1 Sol (GPT-6 Sol if that is what is exposed) | Medium |
 | Hard, coupled work | GPT-6 Astra | Light, increased when needed |
+
+On Claude Code the same shapes map to `haiku`, `sonnet` and `opus` (`fable` as the escalation). That mapping is this project's judgment, not a benchmark, and Claude token savings are as unmeasured as the Codex ones.
 
 These defaults follow current [OpenAI model guidance](https://learn.chatgpt.com/docs/models); actual availability depends on the account and tool. The router keeps model capability and reasoning demand separate. It preserves explicit user choices, blocks an unsupported exact model or effort, and makes review requirements visible when an explicit choice is below its policy floor. Max and Ultra require an explicit request.
 
@@ -55,6 +72,10 @@ When used, TypeSafe receives the manually sanitized task summary, public skill n
 The helper makes at most one provider request per invocation with no retries. Input is capped at 16 KB, response at 64 KB, and the HTTP deadline includes body reads. macOS Keychain lookup is separately bounded to three seconds. It stores no cache or log. Aggregate spending, concurrency, worker tokens, and task verification remain the agent's responsibility. See [SECURITY.md](SECURITY.md).
 
 The helper does not prove task quality, token savings, or faster completion. Compare accepted outcomes and total coordinator, worker, provider, and verification usage on matched tasks before changing policy. See [model and source evidence](references/model-evidence.md).
+
+## Measuring whether it helps
+
+A route is a plan, not evidence. Record each delegated task with `node scripts/receipt.mjs append` (allow-listed scalar fields only: tokens, wall time, retries, accepted or not) and, for the same task types, a `baseline` run without the router. `node scripts/receipt.mjs summary` compares the arms and labels fewer than 20 complete runs per arm as anecdote. The matched-task protocol is in [release checks](references/release-checks.md).
 
 ## Development
 

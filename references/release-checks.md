@@ -1,11 +1,11 @@
 # Router release checks
 
-Version 2.1.1, 2026-09-23.
+Version 2.2.0, 2026-11-12.
 
 ## Release gate
 
 1. Stage a complete copy; keep the installed version intact until checks pass.
-2. Run `node --test scripts/route.test.mjs` and the skill validator.
+2. Run `npm test` (all three test files) and the skill validator.
 3. Check the active dispatch tool model and effort catalog. Cache membership is
    advisory. Do not add unknown models to automatic policy without current docs.
 4. Use a few inspected public synthetic summaries for bounded live TypeSafe
@@ -29,7 +29,7 @@ and cannot change the primary model or thinking effort mid-response.
 
 Keep the previous directory in a user-chosen backup location outside the skill. To roll back,
 copy it to a sibling staging directory under `~/.codex/skills`, move the installed
-router aside, and rename the staged copy into `codex-task-router`. Check hashes
+router aside, and rename the staged copy into `codex-task-router` (the skill directory name; the repository is `codex-jev-task-router`). Check hashes
 before removing any backup. No service, cron, MCP server, or background process
 is installed by this router.
 
@@ -40,3 +40,10 @@ attempts. Measure correctness, source coverage, total coordinator/worker/router
 usage, wall time, retries and review burden. Keep a held-out task set; threshold
 changes and routing explanations alone are not measured improvement. Retain a
 route across unchanged follow-ups and call Jev again only for a material change.
+
+## Matched-task protocol (needed before claiming savings)
+
+1. Choose 20 or more task types you really run (fix a bug, add a form, summarize sources). For each, fix the acceptance check before starting.
+2. Run each task twice from the same starting state: once `baseline` (primary only, no router) and once `routed`. Alternate which runs first.
+3. Record both with `node scripts/receipt.mjs append`: coordinator, worker, router and verification tokens, wall time, retries, and whether the acceptance check passed. Leave a field null rather than estimating.
+4. Run `node scripts/receipt.mjs summary`. Routing is justified only if the routed arm's acceptance rate is no lower and total tokens or wall time is clearly lower, task type by task type. Otherwise tighten the policy or drop delegation for that task type.

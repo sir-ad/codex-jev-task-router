@@ -1,7 +1,7 @@
 import {execFileSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 
-export const POLICY_VERSION = '2.1.1';
+export const POLICY_VERSION = '2.2.0';
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 const TIERS = ['focused', 'standard', 'frontier'];
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
@@ -15,17 +15,35 @@ const maxDemand = (a,b) => DEMANDS[Math.max(DEMANDS.indexOf(a), DEMANDS.indexOf(
 const KNOWN = Object.assign(Object.create(null), {
   'gpt-6-luna': 'focused', 'gpt-6-sol': 'standard', 'gpt-6-astra': 'frontier',
   'gpt-5.6-luna': 'focused', 'gpt-5.6-terra': 'standard', 'gpt-5.6-sol': 'standard',
+  // GPT-6.1 Sol: docs describe near-Astra quality at lower cost, so it is the standard-tier default.
+  // gpt-6.1-terra is deliberately absent: its role is not verified; pass `tier` explicitly to use it.
+  'gpt-6.1-sol': 'standard',
+  // Claude. Tiers are this project's judgment (small, balanced, most capable), not an Anthropic
+  // benchmark claim; relabel with `tier` in availableModels if you disagree.
+  'claude-haiku-5-5': 'focused', haiku: 'focused',
+  'claude-sonnet-5-5': 'standard', sonnet: 'standard',
+  'claude-opus-5-5': 'frontier', opus: 'frontier',
+  'claude-fable-5-2': 'frontier', fable: 'frontier',
 });
+const HOSTS = ['codex', 'claude'];
+// Claude Code's Agent tool accepts only these aliases for `model`, not full model IDs.
+const agentAlias = id => /^(haiku|sonnet|opus|fable)$/.test(id) ? id : /^claude-(haiku|sonnet|opus|fable)-/.exec(id)?.[1] ?? null;
+// A caller-supplied tier (from the active tool catalog) wins over the built-in table.
+const tierOf = model => model.tier ?? KNOWN[model.id];
 const INPUT_KEYS = new Set(['summary', 'sanitized', 'privacy', 'size', 'complexity', 'risk',
   'uncertain', 'independentUnits', 'allowDelegation', 'failedAttempts', 'availableModels',
   'currentModel', 'requestedModel', 'requestedEffort', 'reasoningDemand', 'skills',
-  'workUnits', 'browserCapabilities', 'browserNeeded', 'timeoutMs']);
+  'workUnits', 'browserCapabilities', 'browserNeeded', 'timeoutMs', 'host']);
 const clampTier = (tier, floor) => TIERS[Math.max(TIERS.indexOf(tier), TIERS.indexOf(floor))];
 const probability = x => typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= 1;
-function check(ok, message) { if (!ok) throw new Error(message); }
+// Messages are static strings (never input content), so the CLI may print them.
+export class RouteInputError extends Error {}
+function check(ok, message) { if (!ok) throw new RouteInputError(message); }
 function keys(value, allowed) {
   check(value && typeof value === 'object' && !Array.isArray(value), 'Expected an object');
-  check(Object.keys(value).every(k => allowed.has(k)), 'Unrecognized input field');
+  const bad = Object.keys(value).find(k => !allowed.has(k));
+  // Echo only a short, plain identifier-like key name, never arbitrary content.
+  check(bad === undefined, `Unrecognized input field${/^[A-Za-z_]{1,40}$/.test(bad ?? '') ? `: ${bad}` : ''}`);
 }
 function choice(value, options, label) { check(options.includes(value), `Invalid ${label}`); return value; }
 function integer(value, min, max, label) {
@@ -34,29 +52,31 @@ function integer(value, min, max, label) {
 function flag(value, fallback, label) {
   value ??= fallback; check(typeof value === 'boolean', `Invalid ${label}`); return value;
 }
-function cleanText(value, max) {
-  check(typeof value === 'string' && value.length <= max && !/[\x00-\x1f]/.test(value), 'Invalid text');
+function cleanText(value, max, label = 'text') {
+  check(typeof value === 'string' && value.length <= max && !/[\x00-\x1f]/.test(value), `Invalid ${label}: must be a string of at most ${max} characters without control characters`);
   // A secondary guard only. The coordinator must first abstract all private details.
   check(!/(?:https?:\/\/|\/Users\/|\/home\/|[\w.+-]+@[\w.-]+\.[a-z]{2,}|\b(?:sk-|Bearer\s)|(?:api[_ -]?key|password|secret|token)\s*[:=]|[A-Za-z0-9_+\/-]{48,})/i.test(value),
-    'Text contains a URL, identifier, path, or possible credential; abstract it locally');
+    `${label} matches a URL, email, path, credential-like or long-token pattern; abstract it locally (a pattern hit is a heuristic, rephrase and retry)`);
   return value;
 }
 
 export function validateInput(raw) {
   keys(raw, INPUT_KEYS);
   const input = {
-    summary: cleanText(raw.summary ?? '', 600),
+    summary: cleanText(raw.summary ?? '', 600, 'summary'),
     sanitized: flag(raw.sanitized, false, 'sanitized'),
     privacy: choice(raw.privacy ?? 'private', ['public', 'private'], 'privacy'),
     size: choice(raw.size ?? 'bounded', ['tiny', 'bounded', 'large'], 'size'),
     complexity: choice(raw.complexity ?? 'unknown', ['routine', 'standard', 'hard', 'unknown'], 'complexity'),
     reasoningDemand: choice(raw.reasoningDemand ?? 'unknown', [...DEMANDS, 'unknown'], 'reasoningDemand'),
     risk: choice(raw.risk ?? 'low', ['low', 'elevated', 'critical'], 'risk'),
-    uncertain: flag(raw.uncertain, true, 'uncertain'),
+    uncertain: (check(typeof raw.uncertain === 'boolean',
+      'Missing uncertain: set false for a clear task (local routing, can reach the cheaper tiers) or true to resolve ambiguity'), raw.uncertain),
     independentUnits: integer(raw.independentUnits ?? 0, 0, 3, 'independentUnits'),
     allowDelegation: flag(raw.allowDelegation, false, 'allowDelegation'),
     failedAttempts: integer(raw.failedAttempts ?? 0, 0, 10, 'failedAttempts'),
     timeoutMs: integer(raw.timeoutMs ?? 3500, 100, 8000, 'timeoutMs'),
+    host: choice(raw.host ?? 'codex', HOSTS, 'host'),
   };
   for (const field of ['currentModel', 'requestedModel']) {
     if (raw[field] != null) check(typeof raw[field] === 'string' && ID.test(raw[field]), `Invalid ${field}`);
@@ -66,11 +86,12 @@ export function validateInput(raw) {
   check(Array.isArray(raw.availableModels) && raw.availableModels.length <= 20, 'Provide availableModels from the active tool');
   const modelIds = new Set();
   input.availableModels = raw.availableModels.map(m => {
-    keys(m, new Set(['id', 'efforts']));
+    keys(m, new Set(['id', 'efforts', 'tier']));
     check(typeof m.id === 'string' && ID.test(m.id) && !modelIds.has(m.id), 'Invalid or duplicate model');
     modelIds.add(m.id);
-    check(Array.isArray(m.efforts) && m.efforts.length > 0 && m.efforts.length <= EFFORTS.length && m.efforts.every(e => EFFORTS.includes(e)), 'Invalid model efforts');
-    return {id: m.id, efforts: EFFORTS.filter(e => m.efforts.includes(e))};
+    check(Array.isArray(m.efforts) && (m.efforts.length > 0 || input.host === 'claude') && m.efforts.length <= EFFORTS.length && m.efforts.every(e => EFFORTS.includes(e)), 'Invalid model efforts');
+    if (m.tier != null) check(TIERS.includes(m.tier), 'Invalid model tier');
+    return {id: m.id, efforts: EFFORTS.filter(e => m.efforts.includes(e)), ...(m.tier ? {tier: m.tier} : {})};
   });
   const skills = raw.skills ?? [];
   check(Array.isArray(skills) && skills.length <= 8, 'Shortlist at most eight skills');
@@ -79,7 +100,7 @@ export function validateInput(raw) {
     keys(s, new Set(['id', 'description', 'required', 'selected']));
     check(typeof s.id === 'string' && SKILL_ID.test(s.id) && !skillIds.has(s.id), 'Invalid or duplicate skill');
     skillIds.add(s.id);
-    return {id: s.id, description: cleanText(s.description, 240),
+    return {id: s.id, description: cleanText(s.description, 240, `skill ${s.id} description`),
       required: flag(s.required, false, 'required'), selected: flag(s.selected, false, 'selected')};
   });
   const workUnits = raw.workUnits ?? [];
@@ -91,7 +112,7 @@ export function validateInput(raw) {
     unitIds.add(u.id);
     check(Array.isArray(u.dependsOn ?? []) && (u.dependsOn ?? []).length <= 8 &&
       (u.dependsOn ?? []).every(id => typeof id === 'string' && ID.test(id)), 'Invalid work unit dependencies');
-    return {id:u.id, description:cleanText(u.description, 240), required:flag(u.required, false, 'required'),
+    return {id:u.id, description:cleanText(u.description, 240, `work unit ${u.id} description`), required:flag(u.required, false, 'required'),
       selected:flag(u.selected, false, 'selected'), dependsOn:[...(u.dependsOn ?? [])]};
   });
   for (const unit of input.workUnits) check(unit.dependsOn.every(id => unitIds.has(id) && id !== unit.id), 'Unknown or self dependency');
@@ -112,7 +133,7 @@ export function validateInput(raw) {
     keys(b, new Set(['id','description']));
     check(typeof b.id === 'string' && ID.test(b.id) && !browserIds.has(b.id), 'Invalid or duplicate browser capability');
     browserIds.add(b.id);
-    return {id:b.id,description:cleanText(b.description,200)};
+    return {id:b.id,description:cleanText(b.description,200, `browser capability ${b.id} description`)};
   });
   if (!input.browserNeeded) check(input.browserCapabilities.length === 0, 'Browser capabilities require browserNeeded');
   if (input.browserNeeded) check(input.browserCapabilities.length > 0, 'Provide available browser capabilities');
@@ -248,23 +269,33 @@ function reasoningPolicy(input, answers) {
     abstained:Boolean(answers && !confident), floor};
 }
 
-function effortFor(model, demand) {
+function effortFor(model, demand, host = 'codex') {
+  if (host === 'claude') return {light: 'low', standard: 'medium', deep: 'high', exceptional: 'xhigh'}[demand];
   if (demand === 'exceptional') return 'xhigh';
   if (demand === 'deep') return 'high';
-  return KNOWN[model.id] === 'focused' ? 'high' : KNOWN[model.id] === 'frontier' ? 'low'
+  return tierOf(model) === 'focused' ? 'high' : tierOf(model) === 'frontier' ? 'low'
     : demand === 'light' ? 'low' : 'medium';
 }
 
 function selectPair(tier, input, demand) {
   const order = input.requestedModel ? [input.requestedModel]
-    : tier === 'focused' ? ['gpt-6-luna','gpt-6-sol','gpt-6-astra','gpt-5.6-luna','gpt-5.6-terra','gpt-5.6-sol']
-    : tier === 'standard' ? ['gpt-6-sol','gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra'] : ['gpt-6-astra'];
+    : input.host === 'claude' ? {
+      focused: ['claude-haiku-5-5','haiku','claude-sonnet-5-5','sonnet','claude-opus-5-5','opus'],
+      standard: ['claude-sonnet-5-5','sonnet','claude-opus-5-5','opus','claude-fable-5-2','fable'],
+      frontier: ['claude-opus-5-5','opus','claude-fable-5-2','fable']}[tier]
+    : tier === 'focused' ? ['gpt-6-luna','gpt-6-sol','gpt-6.1-sol','gpt-6-astra','gpt-5.6-luna','gpt-5.6-terra','gpt-5.6-sol']
+    : tier === 'standard' ? ['gpt-6.1-sol','gpt-6-sol','gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra'] : ['gpt-6-astra'];
+  // Models the caller labelled with this exact tier are tried after the built-in order.
+  if (!input.requestedModel) for (const m of input.availableModels) if (m.tier === tier && !order.includes(m.id)) order.push(m.id);
   let first = null;
   for (const id of order) {
     const model = input.availableModels.find(m => m.id === id);
     if (!model) continue;
     first ??= model;
-    const nominal = effortFor(model, demand);
+    const nominal = effortFor(model, demand, input.host);
+    // Claude Code: effort is passed only on explicit request; otherwise the model's own default applies.
+    if (input.host === 'claude') return {model, nominal,
+      effort: input.requestedEffort && model.efforts.includes(input.requestedEffort) ? input.requestedEffort : null};
     // Never silently grant Max/Ultra or reduce effort to fit a model. Explicit
     // choices are exact; otherwise choose the least supported adequate effort.
     const effort = input.requestedEffort
@@ -273,7 +304,7 @@ function selectPair(tier, input, demand) {
           && EFFORTS.indexOf(e) <= EFFORTS.indexOf('xhigh') && model.efforts.includes(e)) ?? null;
     if (effort) return {model, effort, nominal};
   }
-  return {model:input.requestedModel ? first : null, effort:null, nominal:first ? effortFor(first,demand) : null};
+  return {model:input.requestedModel ? first : null, effort:null, nominal:first ? effortFor(first,demand,input.host) : null};
 }
 
 export function compose(input, judge) {
@@ -291,10 +322,13 @@ export function compose(input, judge) {
   const requestedUnavailable = Boolean(input.requestedModel && !input.availableModels.some(m => m.id === input.requestedModel));
   const unsupportedEffort = Boolean(input.requestedEffort && !effort);
   const explicitEffortBelowPolicy = Boolean(input.requestedEffort && nominal && EFFORTS.indexOf(input.requestedEffort) < EFFORTS.indexOf(nominal));
-  const unverifiedModelCapability = Boolean(model && !KNOWN[model.id]);
+  const unverifiedModelCapability = Boolean(model && !tierOf(model));
   const tiny = tinyTask(input);
+  const effortOk = input.host === 'claude' || Boolean(effort);
+  const alias = input.host === 'claude' && model ? agentAlias(model.id) : null;
+  const dispatchable = input.host !== 'claude' || Boolean(alias);
   const blocked = requestedUnavailable || unsupportedEffort;
-  const canDelegate = !blocked && !tiny && !uncertain && model && effort && input.allowDelegation && input.independentUnits > 0;
+  const canDelegate = !blocked && !tiny && !uncertain && model && effortOk && dispatchable && input.allowDelegation && input.independentUnits > 0;
   const usefulParallel = input.independentUnits > 1 && (answers ? answers.parallel.noul >= 0.8 : !input.uncertain);
   const selected = input.skills.filter((s,i) => s.required || s.selected || (answers?.[`skill_${i}`]?.noul >= 0.8));
   const unitSelection = new Map(input.workUnits.map((u,i) => [u.id,
@@ -311,20 +345,23 @@ export function compose(input, judge) {
   const browserAnswer = answers?.browser;
   const browserConfident = decisiveChoice(browserAnswer);
   const browserRoute = input.browserNeeded && browserConfident ? browserAnswer.choice : null;
-  const explicitModelBelowPolicy = Boolean(input.requestedModel && model && KNOWN[model.id] && TIERS.indexOf(KNOWN[model.id]) < TIERS.indexOf(tier));
+  const explicitModelBelowPolicy = Boolean(input.requestedModel && model && tierOf(model) && TIERS.indexOf(tierOf(model)) < TIERS.indexOf(tier));
   const skillDisagreement = Boolean(answers && input.skills.some((s,i) => s.selected && !s.required && answers[`skill_${i}`]?.noul < 0.8));
   const workDisagreement = Boolean(answers && input.workUnits.some((u,i)=>u.selected && !u.required && answers[`work_${i}`]?.noul < 0.8));
   const workNeedsLocalCheck = input.workUnits.length > 0 && !answers;
   const requiresReview = input.risk !== 'low' || input.failedAttempts > 0 || uncertain || explicitModelBelowPolicy || explicitEffortBelowPolicy || unverifiedModelCapability || reasoning.abstained || skillDisagreement || workDisagreement || workNeedsLocalCheck || (input.browserNeeded && !browserConfident);
   return {
-    policyVersion: POLICY_VERSION, status: blocked ? 'blocked_explicit_choice' : model && effort ? 'planned' : 'continue_in_primary',
+    policyVersion: POLICY_VERSION, status: blocked ? 'blocked_explicit_choice' : model && effortOk ? 'planned' : 'continue_in_primary',
     source: judge.status === 'evaluated' ? (decisive ? 'typesafe_and_policy' : 'typesafe_abstained_policy') : 'local_policy',
     tier, recommendedModel: model?.id ?? null, reasoningEffort: effort,
     reasoningDecision: {...reasoning, nominalEffort:nominal, selectedEffort:effort,
       explicitOverride:Boolean(input.requestedEffort), explicitEffortBelowPolicy},
     explicitEffortBelowPolicy, unverifiedModelCapability,
     currentModel: input.currentModel, currentModelChanged: false, currentThinkingEffortChanged:false,
-    dispatch: canDelegate ? {model:model.id, reasoning_effort:effort, fork_turns:'none'} : null,
+    host: input.host,
+    dispatch: !canDelegate ? null : input.host === 'claude'
+      ? {tool:'Agent', subagent_type:'general-purpose', model:alias, ...(effort ? {effort} : {})}
+      : {model:model.id, reasoning_effort:effort, fork_turns:'none'},
     execution: canDelegate ? 'delegate_bounded_work' : 'continue_in_primary',
     maxWorkers: canDelegate ? Math.min(usefulParallel ? input.independentUnits : 1, 2) : 0,
     skillIds: selected.map(s => s.id),
@@ -334,7 +371,7 @@ export function compose(input, judge) {
     skillCandidatesForLocalReview: input.skills.filter((s,i) => !s.required && (!answers || (s.selected && answers[`skill_${i}`]?.noul < 0.8) || (answers[`skill_${i}`]?.noul > 0.2 && answers[`skill_${i}`]?.noul < 0.8))).map(s => s.id),
     verification: input.risk === 'critical' ? 'independent_review_and_task_specific_evidence' : requiresReview ? 'primary_review_and_task_specific_evidence' : 'task_specific_evidence',
     primaryMustReview: requiresReview, explicitModelBelowPolicy,
-    reason: requestedUnavailable ? 'requested_model_not_exposed' : unsupportedEffort ? 'requested_effort_not_supported' : !model ? 'no_verified_model_for_tier' : !effort ? 'no_supported_effort' : tiny ? 'tiny_task_avoids_delegation_overhead' : uncertain ? 'coordinator_resolves_uncertainty' : 'bounded_route_ready',
+    reason: requestedUnavailable ? 'requested_model_not_exposed' : unsupportedEffort ? 'requested_effort_not_supported' : !model ? 'no_verified_model_for_tier' : !effortOk ? 'no_supported_effort' : !dispatchable ? 'no_agent_model_alias' : tiny ? 'tiny_task_avoids_delegation_overhead' : uncertain ? 'coordinator_resolves_uncertainty' : 'bounded_route_ready',
     guardrails: {maxTypeSafeCalls: 1, maxWorkers: 2, maxEscalations: 1, maxRetriesWithoutNewEvidence: 0,
       workerOutputTargetTokens: 700, budgetEnforcement: 'instruction_targets_not_runtime_token_caps'},
     typesafe: judge, executionReceipt: {dispatched: false, actualModel: null, verified: false, workerTokens: null, measuredSavings: null},
@@ -347,7 +384,9 @@ export async function route(raw, deps = {}) {
   const requested = input.availableModels.find(m => m.id === input.requestedModel);
   const requiredPair = input.requestedEffort ? selectPair(baseline(input).floor, input, reasoningPolicy(input,null).demand) : null;
   if ((input.requestedModel && !requested) || (input.requestedEffort &&
-    !(requested ? requested.efforts.includes(input.requestedEffort) : requiredPair.effort))) {
+    !(requested ? requested.efforts.includes(input.requestedEffort)
+      : input.host === 'claude' ? input.availableModels.some(m => m.efforts.includes(input.requestedEffort))
+      : requiredPair.effort))) {
     return compose(input, {status: 'skipped', reason: 'explicit_choice_unavailable', durationMs: 0});
   }
   const tiny = tinyTask(input);
@@ -378,8 +417,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       }
       const source = Buffer.concat(chunks).toString('utf8');
       process.stdout.write(JSON.stringify(await route(JSON.parse(source)), null, 2) + '\n');
-    } catch {
-      process.stderr.write('Routing input rejected; check the documented schema. No dispatch occurred.\n');
+    } catch (error) {
+      // Only our own static validation messages are printed; parse errors can quote input.
+      const detail = error instanceof RouteInputError ? `: ${error.message}` : '; check the documented schema';
+      process.stderr.write(`Routing input rejected${detail}. No dispatch occurred.\n`);
       process.exitCode = 2;
     }
   }

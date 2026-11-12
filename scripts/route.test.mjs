@@ -293,3 +293,58 @@ test('browser route selects only a listed workflow and reports an abstention for
   }));
   assert.equal(abstained.browserRoute,null);assert.equal(abstained.primaryMustReview,true);
 });
+
+const current = [{id:'gpt-6-luna',efforts:['low','medium','high']},{id:'gpt-6.1-sol',efforts:['low','medium','high','xhigh']},
+  {id:'gpt-6-astra',efforts:['low','medium','high','xhigh']}];
+test('standard work prefers GPT-6.1 Sol over Astra when both are exposed',async()=>{
+  const r=await route(input({uncertain:false,availableModels:current}));
+  assert.equal(r.recommendedModel,'gpt-6.1-sol'); assert.equal(r.reasoningEffort,'medium'); assert.equal(r.unverifiedModelCapability,false);
+});
+test('caller-supplied model tier is honoured and unlabelled unknown models stay flagged',async()=>{
+  const labelled=await route(input({uncertain:false,availableModels:[{id:'gpt-6.1-terra',efforts:['medium','high'],tier:'standard'}]}));
+  assert.equal(labelled.recommendedModel,'gpt-6.1-terra'); assert.equal(labelled.unverifiedModelCapability,false);
+  const bare=await route(input({uncertain:false,requestedModel:'gpt-6.1-terra',availableModels:[{id:'gpt-6.1-terra',efforts:['medium']}]}));
+  assert.equal(bare.unverifiedModelCapability,true);
+  await assert.rejects(route(input({availableModels:[{id:'gpt-6-sol',efforts:['low'],tier:'huge'}]})),/Invalid model tier/);
+});
+test('uncertain is required and the error says how to fix it',async()=>{
+  const {uncertain,...rest}=input();
+  await assert.rejects(route(rest),/Missing uncertain/);
+});
+test('validation errors name the field without echoing content',async()=>{
+  await assert.rejects(route(input({sumary:'x'})),/Unrecognized input field: sumary/);
+  await assert.rejects(route(input({summary:'Rotate the API key: update loader'})),error=>
+    /summary matches/.test(error.message) && !error.message.includes('Rotate'));
+  await assert.rejects(route(input({skills:[{id:'a',description:'see https://x.example/y'}]})),/skill a description matches/);
+});
+
+const claudeModels = [{id:'haiku',efforts:[]},{id:'sonnet',efforts:['low','medium','high']},
+  {id:'opus',efforts:['low','medium','high','xhigh','max']},{id:'claude-fable-5-2',efforts:['low','medium','high','xhigh','max']}];
+const claude = (extra={}) => input({host:'claude',uncertain:false,availableModels:claudeModels,...extra});
+test('claude host: tier picks haiku, sonnet or opus and dispatches an Agent call with an alias',async()=>{
+  const cases=[['routine','focused','haiku'],['standard','standard','sonnet'],['hard','frontier','opus']];
+  for(const [complexity,tier,model] of cases){
+    const r=await route(claude({complexity}));
+    assert.equal(r.tier,tier); assert.equal(r.recommendedModel,model);
+    assert.deepEqual(r.dispatch,{tool:'Agent',subagent_type:'general-purpose',model});
+    assert.equal(r.reasoningEffort,null); assert.equal(r.host,'claude');
+  }
+});
+test('claude host: full model IDs map to the alias the Agent tool accepts',async()=>{
+  const r=await route(claude({complexity:'hard',availableModels:[{id:'claude-opus-5-5',efforts:['high']}]}));
+  assert.equal(r.dispatch.model,'opus');
+});
+test('claude host: effort is passed only when explicitly requested and supported',async()=>{
+  const r=await route(claude({requestedEffort:'high'}));
+  assert.equal(r.dispatch.effort,'high'); assert.notEqual(r.typesafe.reason,'explicit_choice_unavailable');
+  const blocked=await route(claude({requestedEffort:'ultra'}));
+  assert.equal(blocked.status,'blocked_explicit_choice'); assert.equal(blocked.dispatch,null);
+});
+test('claude host: unknown family without an alias is never dispatched; codex default is unchanged',async()=>{
+  const r=await route(claude({requestedModel:'claude-future-9',availableModels:[{id:'claude-future-9',efforts:[]}]}));
+  assert.equal(r.dispatch,null); assert.equal(r.reason,'no_agent_model_alias');
+  const codex=await route(input({uncertain:false}));
+  assert.equal(codex.host,'codex'); assert.equal(codex.dispatch.fork_turns,'none');
+  await assert.rejects(route(input({host:'gemini'})),/Invalid host/);
+  await assert.rejects(route(input({availableModels:[{id:'sonnet',efforts:[]}]})),/Invalid or duplicate|efforts/);
+});
