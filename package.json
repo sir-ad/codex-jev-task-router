@@ -2,7 +2,7 @@
   "name": "codex-task-router",
   "version": "2.2.0",
   "private": true,
-  "description": "Plan Codex model, reasoning effort, skills, work units, browser paths, and bounded worker dispatch with optional TypeSafe Jev.",
+  "description": "Plan Codex or Claude Code model, reasoning effort, skills, work units, browser paths, and bounded worker dispatch with optional TypeSafe Jev.",
   "type": "module",
   "license": "MIT",
   "engines": {

@@ -317,3 +317,34 @@ test('validation errors name the field without echoing content',async()=>{
     /summary matches/.test(error.message) && !error.message.includes('Rotate'));
   await assert.rejects(route(input({skills:[{id:'a',description:'see https://x.example/y'}]})),/skill a description matches/);
 });
+
+const claudeModels = [{id:'haiku',efforts:[]},{id:'sonnet',efforts:['low','medium','high']},
+  {id:'opus',efforts:['low','medium','high','xhigh','max']},{id:'claude-fable-5-2',efforts:['low','medium','high','xhigh','max']}];
+const claude = (extra={}) => input({host:'claude',uncertain:false,availableModels:claudeModels,...extra});
+test('claude host: tier picks haiku, sonnet or opus and dispatches an Agent call with an alias',async()=>{
+  const cases=[['routine','focused','haiku'],['standard','standard','sonnet'],['hard','frontier','opus']];
+  for(const [complexity,tier,model] of cases){
+    const r=await route(claude({complexity}));
+    assert.equal(r.tier,tier); assert.equal(r.recommendedModel,model);
+    assert.deepEqual(r.dispatch,{tool:'Agent',subagent_type:'general-purpose',model});
+    assert.equal(r.reasoningEffort,null); assert.equal(r.host,'claude');
+  }
+});
+test('claude host: full model IDs map to the alias the Agent tool accepts',async()=>{
+  const r=await route(claude({complexity:'hard',availableModels:[{id:'claude-opus-5-5',efforts:['high']}]}));
+  assert.equal(r.dispatch.model,'opus');
+});
+test('claude host: effort is passed only when explicitly requested and supported',async()=>{
+  const r=await route(claude({requestedEffort:'high'}));
+  assert.equal(r.dispatch.effort,'high'); assert.notEqual(r.typesafe.reason,'explicit_choice_unavailable');
+  const blocked=await route(claude({requestedEffort:'ultra'}));
+  assert.equal(blocked.status,'blocked_explicit_choice'); assert.equal(blocked.dispatch,null);
+});
+test('claude host: unknown family without an alias is never dispatched; codex default is unchanged',async()=>{
+  const r=await route(claude({requestedModel:'claude-future-9',availableModels:[{id:'claude-future-9',efforts:[]}]}));
+  assert.equal(r.dispatch,null); assert.equal(r.reason,'no_agent_model_alias');
+  const codex=await route(input({uncertain:false}));
+  assert.equal(codex.host,'codex'); assert.equal(codex.dispatch.fork_turns,'none');
+  await assert.rejects(route(input({host:'gemini'})),/Invalid host/);
+  await assert.rejects(route(input({availableModels:[{id:'sonnet',efforts:[]}]})),/Invalid or duplicate|efforts/);
+});
